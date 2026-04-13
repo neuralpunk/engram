@@ -114,6 +114,25 @@ var slashCommands = map[string]string{
 	"corrections.md": "List, search, and manage all stored corrections in engram.\n\n## Instructions\n\n- List all: `engram list`\n- List by scope: `engram list --scope global` or `engram list --scope project:<name>`\n- Search: `engram search \"<query>\"`\n- Stats: `engram stats`\n- Export: `engram export` (JSON) or `engram export --format toml`\n- Import: `engram import <file>`\n- Edit: `engram edit <id>`\n",
 }
 
+// hookEntryExists checks if a hook command is already registered for a given event.
+func hookEntryExists(hooks map[string]any, event string, cmd string) bool {
+	existing, _ := hooks[event].([]any)
+	for _, entry := range existing {
+		if em, ok := entry.(map[string]any); ok {
+			if innerHooks, ok := em["hooks"].([]any); ok {
+				for _, h := range innerHooks {
+					if hm, ok := h.(map[string]any); ok {
+						if c, ok := hm["command"].(string); ok && c == cmd {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
 func initHooks() error {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -149,42 +168,54 @@ func initHooks() error {
 	}
 
 	hookCmd := "engram hook 2>/dev/null || true"
+	captureCmd := "engram capture 2>/dev/null || true"
 
 	hooks, _ := settings["hooks"].(map[string]any)
 	if hooks == nil {
 		hooks = make(map[string]any)
 	}
 
-	// Claude Code hook format: {"matcher": "", "hooks": [{"type": "command", "command": "..."}]}
-	existing, _ := hooks["UserPromptSubmit"].([]any)
-	for _, entry := range existing {
-		if em, ok := entry.(map[string]any); ok {
-			if innerHooks, ok := em["hooks"].([]any); ok {
-				for _, h := range innerHooks {
-					if hm, ok := h.(map[string]any); ok {
-						if cmd, ok := hm["command"].(string); ok && cmd == hookCmd {
-							fmt.Println("  hook already installed in .claude/settings.json")
-							goto done
-						}
-					}
-				}
-			}
-		}
+	changed := false
+
+	// Install UserPromptSubmit hook
+	if !hookEntryExists(hooks, "UserPromptSubmit", hookCmd) {
+		existing, _ := hooks["UserPromptSubmit"].([]any)
+		existing = append(existing, map[string]any{
+			"matcher": "",
+			"hooks": []any{
+				map[string]any{
+					"type":    "command",
+					"command": hookCmd,
+				},
+			},
+		})
+		hooks["UserPromptSubmit"] = existing
+		changed = true
+	} else {
+		fmt.Println("  UserPromptSubmit hook already installed")
 	}
 
-	existing = append(existing, map[string]any{
-		"matcher": "",
-		"hooks": []any{
-			map[string]any{
-				"type":    "command",
-				"command": hookCmd,
+	// Install PostToolUse hook
+	if !hookEntryExists(hooks, "PostToolUse", captureCmd) {
+		existing, _ := hooks["PostToolUse"].([]any)
+		existing = append(existing, map[string]any{
+			"matcher": "",
+			"hooks": []any{
+				map[string]any{
+					"type":    "command",
+					"command": captureCmd,
+				},
 			},
-		},
-	})
-	hooks["UserPromptSubmit"] = existing
+		})
+		hooks["PostToolUse"] = existing
+		changed = true
+	} else {
+		fmt.Println("  PostToolUse hook already installed")
+	}
+
 	settings["hooks"] = hooks
 
-	{
+	if changed {
 		data, err := json.MarshalIndent(settings, "", "  ")
 		if err != nil {
 			return fmt.Errorf("marshaling settings: %w", err)
@@ -192,15 +223,15 @@ func initHooks() error {
 		if err := os.WriteFile(settingsPath, data, 0644); err != nil {
 			return fmt.Errorf("writing settings: %w", err)
 		}
-		fmt.Println("  installed hook in .claude/settings.json")
+		fmt.Println("  installed hooks in .claude/settings.json")
 	}
-
-done:
 	fmt.Println("\nClaude Code integration installed. Available commands:")
 	fmt.Println("  /remember    — store a correction")
 	fmt.Println("  /forget      — delete a correction")
 	fmt.Println("  /recall      — retrieve relevant corrections")
 	fmt.Println("  /corrections — list and manage corrections")
+	fmt.Println("\nMCP config (add to your editor's MCP settings):")
+	fmt.Println(`  {"mcpServers": {"engram": {"command": "engram", "args": ["mcp"]}}}`)
 	return nil
 }
 

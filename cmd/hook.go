@@ -61,7 +61,7 @@ func Hook(args []string, dbPath string) error {
 		// If DB fails, still output behavior prompt with no corrections
 		fmt.Print(format.FormatSystemPrompt(nil))
 		if prompt != "" && correctionPatterns.MatchString(prompt) {
-			printCorrectionAlert()
+			printCorrectionAlert(prompt)
 		}
 		return nil
 	}
@@ -101,7 +101,7 @@ func Hook(args []string, dbPath string) error {
 			database.Close()
 			fmt.Print(format.FormatSystemPrompt(nil))
 			if prompt != "" && correctionPatterns.MatchString(prompt) {
-				printCorrectionAlert()
+				printCorrectionAlert(prompt)
 			}
 			return nil
 		}
@@ -119,7 +119,7 @@ func Hook(args []string, dbPath string) error {
 
 	// If correction detected, append urgent instruction
 	if prompt != "" && correctionPatterns.MatchString(prompt) {
-		printCorrectionAlert()
+		printCorrectionAlert(prompt)
 	}
 
 	// Update hit counts before closing
@@ -144,7 +144,8 @@ func truncateRunes(s string, n int) string {
 	return string(runes[len(runes)-n:])
 }
 
-func printCorrectionAlert() {
+func printCorrectionAlert(prompt string) {
+	writePendingState(prompt)
 	alert := strings.Join([]string{
 		"",
 		"",

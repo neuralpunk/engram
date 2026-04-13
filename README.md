@@ -14,7 +14,7 @@ It stores corrections as atomic facts in a local SQLite database, retrieves rele
 You correct the AI  →  engram stores the fact  →  next session, engram injects it  →  mistake never repeats
 ```
 
-engram is a single CLI binary. No daemon, no server, no cloud. It integrates with Claude Code via a prompt hook that runs on every message. The hook reads the user's prompt, uses it as a search query to retrieve the most relevant corrections, detects correction patterns (like "actually," "that's wrong," "we use X not Y"), and injects a targeted instruction that triggers the AI to store the correction. You never interact with engram directly — you just talk to the AI.
+engram is a single CLI binary. No daemon, no cloud. It integrates with Claude Code via prompt hooks that run on every message, and with other editors (Cursor, Windsurf, Claude Desktop) via a built-in MCP server. The hook reads the user's prompt, uses it as a search query to retrieve the most relevant corrections, detects correction patterns (like "actually," "that's wrong," "we use X not Y"), and injects a targeted instruction that triggers the AI to store the correction. A secondary hook monitors tool calls and reminds the AI if it forgets to store a detected correction. You never interact with engram directly — you just talk to the AI.
 
 ### How is this different from MemPalace?
 
@@ -62,6 +62,18 @@ engram init --project
 This creates the `.engram` project marker, installs the prompt hook, adds slash commands (`/remember`, `/forget`, `/recall`, `/corrections`), and writes engram behavior instructions to CLAUDE.md. The database is created automatically on first use — no separate init step.
 
 Start a new Claude Code conversation and corrections accumulate automatically.
+
+### Other editors (Cursor, Windsurf, Claude Desktop, etc.)
+
+engram includes a built-in MCP server. Add this to your editor's MCP settings:
+
+```json
+{"mcpServers": {"engram": {"command": "engram", "args": ["mcp"]}}}
+```
+
+This exposes three tools to the AI: `store` (save a correction), `search` (find corrections by query), and `get` (retrieve relevant corrections for the current context). The MCP server speaks JSON-RPC 2.0 over stdio — no network, no daemon.
+
+### Slash commands (Claude Code)
 
 | Command | What it does |
 |---|---|
@@ -243,6 +255,7 @@ engram export                Export as JSON or TOML
 engram import <file>         Import from JSON or TOML
 engram vacuum                Rebuild FTS index and optimize database
 engram hook                  Claude Code prompt hook (reads stdin, detects corrections)
+engram mcp                   Start MCP stdio server (for Cursor, Windsurf, etc.)
 
 Global flag:
   --db <path>                Skip config loading, use database directly
@@ -274,8 +287,8 @@ level = "warn"
 ## Design principles
 
 - **One binary.** No Docker, no runtime, no Node. `make build` and done. 4.8MB.
-- **Two dependencies.** SQLite and TOML. That's it. No frameworks.
-- **No server.** No daemon, no MCP, no proxy. A CLI that reads and writes a SQLite file.
+- **Two dependencies.** SQLite and TOML. That's it. No frameworks, no MCP SDK.
+- **No daemon.** No background process, no network listener. The MCP server is a stdio subprocess spawned by your editor — it lives and dies with the session.
 - **Fast.** 3ms total wall time. Sub-5ms search on 10,000 corrections.
 - **Private.** Everything local. No telemetry. No cloud.
 - **Invisible.** After setup, you never think about engram. You just talk to the AI.

@@ -8,7 +8,7 @@ import (
 	"engram/cmd"
 )
 
-const version = "0.4.0"
+const version = "0.5.0"
 
 const usage = `engram - correction memory for LLMs
 
@@ -28,6 +28,7 @@ Commands:
   import     Import corrections from JSON or TOML
   vacuum     Rebuild FTS index and optimize database
   hook       Claude Code hook handler (reads prompt from stdin, detects corrections)
+  mcp        Start MCP stdio server (for Cursor, Windsurf, etc.)
 
 Global flags:
   --db <path>   Use database directly (skips config loading)
@@ -77,8 +78,10 @@ func main() {
 		"stats":  cmd.Stats,
 		"export": cmd.Export,
 		"import": cmd.Import,
-		"vacuum": cmd.Vacuum,
-		"hook":   cmd.Hook,
+		"vacuum":  cmd.Vacuum,
+		"hook":    cmd.Hook,
+		"mcp":     cmd.MCP,
+		"capture": cmd.Capture,
 	}
 
 	fn, ok := commands[command]

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0 (unreleased)
+
+### Added
+- `engram mcp` command. Starts a stdio MCP server exposing three tools:
+  `store`, `search`, and `get`. Works with any MCP-aware host (Cursor,
+  Windsurf, Claude Desktop, etc.). No SDK, no daemon, no new dependencies —
+  pure JSON-RPC 2.0 over stdin/stdout.
+- Passive correction capture via `PostToolUse` hook. When `engram hook`
+  detects a correction pattern but the LLM doesn't call `engram store` before
+  its next Bash invocation, `engram capture` injects a reminder so the
+  correction isn't silently lost.
+- `engram init --hooks` now also installs the `PostToolUse` hook for passive
+  capture. Existing projects should re-run `engram init --hooks` to activate.
+
+### Changed
+- `engram init --project` prints MCP config hint after hook installation.
+- Version bumped to 0.5.0.
+
 ## 0.4.0 (2026-04-13)
 
 ### Retrieval accuracy
