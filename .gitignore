@@ -1,0 +1,31 @@
+# Binary
+engram
+engram.exe
+
+# Database files (local data, not committed)
+*.db
+*.db-wal
+*.db-shm
+
+# Claude Code local settings (machine-specific permissions)
+.claude/settings.local.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+.engram
+
+# Build
+dist/

@@ -1,0 +1,40 @@
+{
+  "corrections": [
+    {
+      "fact": "This project uses BurntSushi/toml for config, not viper.",
+      "wrong": "viper",
+      "scope": "project:engram",
+      "tags": "config,go",
+      "source": "user",
+      "confidence": 1.0
+    },
+    {
+      "fact": "Prefer compact prose over bullet points in all responses.",
+      "scope": "global",
+      "source": "user",
+      "confidence": 1.0
+    },
+    {
+      "fact": "Target Go 1.22. Do not suggest features from later versions.",
+      "scope": "domain:go",
+      "tags": "go,version",
+      "source": "user",
+      "confidence": 1.0
+    },
+    {
+      "fact": "The dev server must bind to port 8080; port 3000 is reserved for the frontend proxy.",
+      "scope": "project:myproject",
+      "tags": "server,ports,networking",
+      "source": "user",
+      "confidence": 1.0
+    },
+    {
+      "fact": "This project uses BurntSushi/toml for config parsing, not viper.",
+      "wrong": "viper",
+      "scope": "project:myproject",
+      "tags": "config,toml,parsing",
+      "source": "user",
+      "confidence": 1.0
+    }
+  ]
+}
