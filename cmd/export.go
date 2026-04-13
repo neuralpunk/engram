@@ -9,16 +9,19 @@ import (
 )
 
 type exportCorrection struct {
-	ID         int64   `json:"id" toml:"id"`
-	Fact       string  `json:"fact" toml:"fact"`
-	Wrong      string  `json:"wrong,omitempty" toml:"wrong,omitempty"`
-	Scope      string  `json:"scope" toml:"scope"`
-	Tags       string  `json:"tags,omitempty" toml:"tags,omitempty"`
-	Source     string  `json:"source,omitempty" toml:"source,omitempty"`
-	Confidence float64 `json:"confidence" toml:"confidence"`
-	CreatedAt  int64   `json:"created_at" toml:"created_at"`
-	UpdatedAt  int64   `json:"updated_at" toml:"updated_at"`
-	HitCount   int64   `json:"hit_count" toml:"hit_count"`
+	ID           int64   `json:"id" toml:"id"`
+	Fact         string  `json:"fact" toml:"fact"`
+	Wrong        string  `json:"wrong,omitempty" toml:"wrong,omitempty"`
+	Scope        string  `json:"scope" toml:"scope"`
+	Tags         string  `json:"tags,omitempty" toml:"tags,omitempty"`
+	Source       string  `json:"source,omitempty" toml:"source,omitempty"`
+	Type         string  `json:"type" toml:"type"`
+	TriggerHint  string  `json:"trigger_hint,omitempty" toml:"trigger_hint,omitempty"`
+	SupersedesID int64   `json:"supersedes_id,omitempty" toml:"supersedes_id,omitempty"`
+	Confidence   float64 `json:"confidence" toml:"confidence"`
+	CreatedAt    int64   `json:"created_at" toml:"created_at"`
+	UpdatedAt    int64   `json:"updated_at" toml:"updated_at"`
+	HitCount     int64   `json:"hit_count" toml:"hit_count"`
 }
 
 type exportData struct {
@@ -50,22 +53,25 @@ func Export(args []string, dbPath string) error {
 	var export exportData
 	for _, c := range corrections {
 		export.Corrections = append(export.Corrections, exportCorrection{
-			ID:         c.ID,
-			Fact:       c.Fact,
-			Wrong:      c.Wrong.String,
-			Scope:      c.Scope,
-			Tags:       c.Tags.String,
-			Source:     c.Source.String,
-			Confidence: c.Confidence,
-			CreatedAt:  c.CreatedAt,
-			UpdatedAt:  c.UpdatedAt,
-			HitCount:   c.HitCount,
+			ID:           c.ID,
+			Fact:         c.Fact,
+			Wrong:        c.Wrong.String,
+			Scope:        c.Scope,
+			Tags:         c.Tags.String,
+			Source:       c.Source.String,
+			Type:         c.Type,
+			TriggerHint:  c.TriggerHint.String,
+			SupersedesID: c.SupersedesID.Int64,
+			Confidence:   c.Confidence,
+			CreatedAt:    c.CreatedAt,
+			UpdatedAt:    c.UpdatedAt,
+			HitCount:     c.HitCount,
 		})
 	}
 
 	w := os.Stdout
 	if output != "" {
-		f, err := os.OpenFile(output, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0640)
+		f, err := os.OpenFile(output, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 		if err != nil {
 			return fmt.Errorf("creating output file: %w", err)
 		}

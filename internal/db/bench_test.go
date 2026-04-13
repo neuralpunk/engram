@@ -117,3 +117,25 @@ func BenchmarkList(b *testing.B) {
 		db.List("global", "", 10)
 	}
 }
+
+func BenchmarkSearchPhraseFirst1000(b *testing.B) {
+	db, _ := OpenMemory()
+	defer db.Close()
+	seedDB(b, db, 1000)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		db.Search("toml configuration management", nil, 10, 0)
+	}
+}
+
+func BenchmarkSearchPhraseFirst10000(b *testing.B) {
+	db, _ := OpenMemory()
+	defer db.Close()
+	seedDB(b, db, 10000)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		db.Search("toml configuration management", nil, 10, 0)
+	}
+}

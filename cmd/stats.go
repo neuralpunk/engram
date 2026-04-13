@@ -23,6 +23,21 @@ func Stats(args []string, dbPath string) error {
 	fmt.Printf("Sessions:     %d\n", stats.TotalSessions)
 	fmt.Printf("Injections:   %d\n", stats.TotalInjections)
 
+	if len(stats.TypeBreakdown) > 0 {
+		fmt.Printf("\nBy type:\n")
+		typeOrder := []string{"fact", "constraint", "preference", "gotcha", "process"}
+		for _, t := range typeOrder {
+			if count, ok := stats.TypeBreakdown[t]; ok {
+				fmt.Printf("  %-14s %d\n", t, count)
+			}
+		}
+	}
+
+	if stats.StaleCount > 0 {
+		fmt.Printf("\nStale (not retrieved in 180 days): %d\n", stats.StaleCount)
+		fmt.Println("  Run 'engram list --stale' to review them.")
+	}
+
 	if len(stats.TopCorrections) > 0 {
 		fmt.Printf("\nTop corrections by hit count:\n")
 		for _, c := range stats.TopCorrections {

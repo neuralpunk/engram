@@ -34,6 +34,8 @@ type StatsResult struct {
 	TotalCorrections int
 	TotalInjections  int
 	TotalSessions    int
+	TypeBreakdown    map[string]int
+	StaleCount       int
 	TopCorrections   []CorrectionStat
 }
 
@@ -47,7 +49,9 @@ type CorrectionStat struct {
 
 // Stats returns aggregate statistics about corrections and injections.
 func (db *DB) Stats() (*StatsResult, error) {
-	s := &StatsResult{}
+	s := &StatsResult{
+		TypeBreakdown: make(map[string]int),
+	}
 
 	if err := db.conn.QueryRow("SELECT COUNT(*) FROM corrections").Scan(&s.TotalCorrections); err != nil {
 		return nil, fmt.Errorf("counting corrections: %w", err)
@@ -59,6 +63,34 @@ func (db *DB) Stats() (*StatsResult, error) {
 		return nil, fmt.Errorf("counting sessions: %w", err)
 	}
 
+	// Type breakdown
+	typeRows, err := db.conn.Query("SELECT type, COUNT(*) FROM corrections GROUP BY type")
+	if err != nil {
+		return nil, fmt.Errorf("querying type breakdown: %w", err)
+	}
+	defer typeRows.Close()
+	for typeRows.Next() {
+		var t string
+		var count int
+		if err := typeRows.Scan(&t, &count); err != nil {
+			return nil, fmt.Errorf("scanning type breakdown: %w", err)
+		}
+		s.TypeBreakdown[t] = count
+	}
+	if err := typeRows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Stale count
+	staleThreshold := time.Now().Unix() - 180*86400
+	if err := db.conn.QueryRow(
+		"SELECT COUNT(*) FROM corrections WHERE hit_count = 0 OR (last_hit IS NOT NULL AND last_hit < ?)",
+		staleThreshold,
+	).Scan(&s.StaleCount); err != nil {
+		return nil, fmt.Errorf("counting stale corrections: %w", err)
+	}
+
+	// Top corrections
 	rows, err := db.conn.Query(
 		"SELECT id, fact, scope, hit_count FROM corrections ORDER BY hit_count DESC LIMIT 10",
 	)

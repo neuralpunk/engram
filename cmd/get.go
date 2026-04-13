@@ -30,15 +30,16 @@ func Get(args []string, dbPath string) error {
 	if err != nil {
 		return err
 	}
-	defer database.Close()
 
 	maxCorrections := cfg.Injection.MaxCorrections
 	if limit > 0 {
 		maxCorrections = limit
 	}
 
+	detectedProject := ""
 	detectedScope := ""
 	if projName, found := project.Detect(workdir); found {
+		detectedProject = projName
 		detectedScope = "project:" + projName
 	}
 
@@ -54,6 +55,7 @@ func Get(args []string, dbPath string) error {
 	if all || query == "" {
 		corrections, err := database.List("", "", 0)
 		if err != nil {
+			database.Close()
 			return err
 		}
 
@@ -75,32 +77,36 @@ func Get(args []string, dbPath string) error {
 		for i, c := range corrections {
 			scored[i] = db.ScoredCorrection{Correction: c, Score: -1.0}
 		}
-		selected = format.SelectCorrections(scored, maxCorrections, cfg.Injection.MaxTokens)
+		selected = format.SelectCorrections(scored, maxCorrections, cfg.Injection.MaxTokens, detectedProject)
 	} else {
 		results, err := database.Search(query, scopes, maxCorrections*2, cfg.Injection.MinScore)
 		if err != nil {
+			database.Close()
 			return err
 		}
-		selected = format.SelectCorrections(results, maxCorrections, cfg.Injection.MaxTokens)
+		selected = format.SelectCorrections(results, maxCorrections, cfg.Injection.MaxTokens, detectedProject)
 	}
 
-	if len(selected) == 0 {
-		return nil
+	// Print output first, then update hit counts async
+	if raw {
+		for _, c := range selected {
+			fmt.Printf("[%s] %s\n", c.Scope, c.Fact)
+		}
+		if len(selected) == 0 {
+			database.Close()
+			return nil
+		}
+	} else {
+		fmt.Print(format.FormatSystemPrompt(selected))
 	}
 
+	// Update hit counts before closing
 	ids := make([]int64, len(selected))
 	for i, c := range selected {
 		ids[i] = c.ID
 	}
 	database.IncrementHitCounts(ids)
-
-	if raw {
-		for _, c := range selected {
-			fmt.Printf("[%s] %s\n", c.Scope, c.Fact)
-		}
-	} else {
-		fmt.Print(format.FormatMemoryBlock(selected))
-	}
+	database.Close()
 
 	return nil
 }

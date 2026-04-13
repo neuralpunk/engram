@@ -8,11 +8,13 @@ import (
 func List(args []string, dbPath string) error {
 	var scope, tag string
 	var limit int
+	var stale bool
 
 	a := newArgs(args, "Usage: engram list [flags]")
 	a.String(&scope, "scope", "", "Filter by scope (e.g. global, project:foo)")
 	a.String(&tag, "tag", "", "Filter by tag")
 	a.Int(&limit, "limit", 50, "Maximum results")
+	a.Bool(&stale, "stale", false, "Show only corrections not retrieved in 180 days")
 	if err := a.Parse(); err != nil {
 		return err
 	}
@@ -23,13 +25,17 @@ func List(args []string, dbPath string) error {
 	}
 	defer database.Close()
 
-	corrections, err := database.List(scope, tag, limit)
+	corrections, err := database.List(scope, tag, limit, stale)
 	if err != nil {
 		return err
 	}
 
 	if len(corrections) == 0 {
-		fmt.Println("No corrections stored.")
+		if stale {
+			fmt.Println("No stale corrections.")
+		} else {
+			fmt.Println("No corrections stored.")
+		}
 		return nil
 	}
 

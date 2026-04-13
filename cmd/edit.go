@@ -46,14 +46,18 @@ func Edit(args []string, dbPath string) error {
 	}
 
 	type editableFields struct {
-		Fact  string `json:"fact"`
-		Scope string `json:"scope"`
-		Tags  string `json:"tags"`
+		Fact        string `json:"fact"`
+		Scope       string `json:"scope"`
+		Tags        string `json:"tags"`
+		Type        string `json:"type"`
+		TriggerHint string `json:"trigger_hint"`
 	}
 	ef := editableFields{
-		Fact:  c.Fact,
-		Scope: c.Scope,
-		Tags:  c.Tags.String,
+		Fact:        c.Fact,
+		Scope:       c.Scope,
+		Tags:        c.Tags.String,
+		Type:        c.Type,
+		TriggerHint: c.TriggerHint.String,
 	}
 
 	tmpFile, err := os.CreateTemp("", "engram-edit-*.json")
@@ -94,9 +98,11 @@ func Edit(args []string, dbPath string) error {
 	}
 
 	fields := db.UpdateFields{
-		Fact:  &updated.Fact,
-		Scope: &updated.Scope,
-		Tags:  &updated.Tags,
+		Fact:        &updated.Fact,
+		Scope:       &updated.Scope,
+		Tags:        &updated.Tags,
+		Type:        &updated.Type,
+		TriggerHint: &updated.TriggerHint,
 	}
 	if err := database.Update(id, fields); err != nil {
 		return err

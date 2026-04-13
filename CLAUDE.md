@@ -35,18 +35,14 @@ The primary design constraint is that engram must be **invisible during normal u
 make build && sudo make install
 # Or install manually: sudo cp engram /usr/local/bin/
 
-# Global init: creates ~/.config/engram/config.toml and global DB
-engram init
-
-# Project init: creates .engram marker file in current directory
+# Enable engram in a project — one command, that's it
 cd ~/projects/myproject
 engram init --project
-
-# Install Claude Code slash commands and prompt hook
-engram init --hooks
 ```
 
-That's the entire setup. The `--hooks` flag installs `/remember`, `/forget`, `/recall`, and `/corrections` slash commands plus a prompt hook that auto-injects corrections.
+That's the entire setup. `engram init --project` creates the `.engram` marker file, installs the Claude Code prompt hook, and adds `/remember`, `/forget`, `/recall`, and `/corrections` slash commands. The database is created automatically on first use — no separate init step required.
+
+You can also run `engram init` separately to explicitly create the global config and database, or `engram init --hooks` to reinstall just the Claude Code integration.
 
 ### Normal use — no commands required
 
@@ -58,7 +54,8 @@ After setup, the user just has conversations. Engram handles everything:
 User:  Write a function to read the config file.
 AI:    [writes code using viper]
 User:  We don't use viper in this project, we use BurntSushi/toml.
-AI:    Got it, here's the corrected version... [silently calls: engram store "This project uses BurntSushi/toml for config, not viper." --scope project:myproject --wrong "viper"]
+AI:    ▣ Stored in engram memory: project uses BurntSushi/toml, not viper.
+       Here's the corrected version... [calls: engram store "This project uses BurntSushi/toml for config, not viper." --scope project:myproject --wrong "viper"]
 ```
 
 Next session, engram injects: `[project:myproject] This project uses BurntSushi/toml for config, not viper.`
@@ -138,7 +135,7 @@ This section defines how the LLM must behave when engram is available. These ins
 
 The LLM calls engram via Bash. It never announces these operations to the user.
 
-**Storing corrections** — call silently whenever:
+**Storing corrections** — call whenever:
 - The user explicitly corrects something ("that's wrong," "actually," "no,")
 - The user states a fact about their project, environment, or preferences that should persist
 - The user says "remember," "keep in mind," "going forward," "always," or "never" followed by a constraint
@@ -168,7 +165,7 @@ engram get "current topic or task"
 - "what do you know about this project?" → `engram list --scope project:<name>`
 - "show me everything you've remembered" → `engram list`
 
-**Silent operation** — do not say "I've stored that in engram" or "I'll remember that via engram." Respond with "Got it." or "Noted." and move on.
+**Acknowledgment** — after storing a correction, include a brief one-line confirmation: "▣ Stored in engram memory: <short summary>". Then continue naturally.
 
 **Corrections are ground truth** — facts from engram take precedence over training data and prior assumptions.
 
@@ -234,8 +231,8 @@ We talked about how the project works and some things that were wrong with prior
 
 ```
 engram init               Global init: create config and DB
-engram init --project     Project init: create .engram marker in cwd
-engram init --hooks       Install Claude Code slash commands and prompt hook
+engram init --project     Set up engram in current project (marker + hooks)
+engram init --hooks       Reinstall just the Claude Code integration
 engram store <fact>       Store a correction (with --scope, --wrong, --tags, --source flags)
 engram get [query]        Retrieve relevant corrections (with --all, --raw, --limit, --scope flags)
 engram list               List all corrections (with --scope, --tag, --limit flags)
@@ -276,7 +273,7 @@ Run `engram init --hooks` to install automatically, or add manually to `.claude/
         "hooks": [
           {
             "type": "command",
-            "command": "engram get --all 2>/dev/null || true"
+            "command": "engram hook 2>/dev/null || true"
           }
         ]
       }
@@ -416,7 +413,7 @@ SQL triggers keep the FTS index in sync with the corrections table automatically
 - Do not require a database server. SQLite only.
 - Do not add a web UI, daemon, or server of any kind.
 - Do not import LangChain, LlamaIndex, or any Python-ecosystem port. Pure Go.
-- Do not make the LLM announce engram operations. Silent operation is correct behavior.
+- After storing a correction, briefly acknowledge it with "▣ Stored in engram memory: <summary>". Do not over-explain.
 - Do not store the `wrong` field in injected prompts. Analytics only.
 - Do not ask the user to confirm before storing a correction. Just store it.
 

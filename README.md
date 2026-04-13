@@ -14,7 +14,7 @@ It stores corrections as atomic facts in a local SQLite database, retrieves rele
 You correct the AI  →  engram stores the fact  →  next session, engram injects it  →  mistake never repeats
 ```
 
-engram is a single CLI binary. No daemon, no server, no cloud. It integrates with Claude Code via slash commands and a hook that runs automatically on every prompt. The AI calls `engram store` when it detects corrections, and the hook calls `engram get` to retrieve relevant ones. You never interact with engram directly — you just talk to the AI.
+engram is a single CLI binary. No daemon, no server, no cloud. It integrates with Claude Code via a prompt hook that runs on every message. The hook reads the user's prompt, detects correction patterns (like "actually," "that's wrong," "we use X not Y"), and injects a targeted instruction that triggers the AI to store the correction. You never interact with engram directly — you just talk to the AI.
 
 ### How is this different from MemPalace?
 
@@ -30,7 +30,7 @@ Claude Code has its own memory system (markdown files in `~/.claude/projects/`).
 | Retrieval | LLM reads files it thinks are relevant | BM25 ranked search, scoped |
 | Scope | Per-project directory path | global / project / domain |
 | Search | LLM judgment | Full-text search with ranking |
-| Structure | Freeform markdown | Atomic facts with tags, scope, wrong field, hit tracking |
+| Structure | Freeform markdown | Typed atomic facts with tags, scope, trigger hints, hit tracking |
 | Focus | General — user prefs, project context, references | Specific — corrections that prevent repeated mistakes |
 
 They're complementary. Claude Code memory remembers "this user prefers terse responses." engram remembers "this project uses toml not viper" and retrieves it when config parsing comes up.
@@ -52,25 +52,16 @@ sudo cp engram /usr/local/bin/
 
 ## Setup
 
-Three commands. You do this once.
+One command per project. That's it.
 
 ```bash
-# 1. Create config and database
-engram init
-
-# 2. Mark your project for project-scoped memory (optional, per-project)
 cd ~/projects/myproject
 engram init --project
-
-# 3. Install Claude Code slash commands and hook
-engram init --hooks
 ```
 
-That's it. From now on, corrections accumulate automatically.
+This creates the `.engram` project marker, installs the prompt hook, adds slash commands (`/remember`, `/forget`, `/recall`, `/corrections`), and writes engram behavior instructions to CLAUDE.md. The database is created automatically on first use — no separate init step.
 
-### What `init --hooks` installs
-
-**Slash commands** — available in Claude Code as `/remember`, `/forget`, `/recall`, `/corrections`:
+Start a new Claude Code conversation and corrections accumulate automatically.
 
 | Command | What it does |
 |---|---|
@@ -79,7 +70,7 @@ That's it. From now on, corrections accumulate automatically.
 | `/recall` | Retrieve relevant corrections for the current topic |
 | `/corrections` | List, search, export, and manage all corrections |
 
-**Prompt hook** — automatically injects relevant corrections at the start of every prompt, so the AI has context before it responds.
+You can also run `engram init` separately to explicitly create the global config and database, or `engram init --hooks` to reinstall just the Claude Code integration without touching the project marker.
 
 ## What it looks like in practice
 
@@ -87,20 +78,84 @@ You're working on a project and the AI suggests using viper for config parsing:
 
 ```
 You:  We don't use viper in this project, we use BurntSushi/toml.
-AI:   Got it, here's the corrected version...
+AI:   ▣ Stored in engram memory: project uses BurntSushi/toml, not viper.
+      Here's the corrected version...
 ```
 
-Behind the scenes, the AI silently runs:
+Behind the scenes, the AI runs:
 ```bash
-engram store "This project uses BurntSushi/toml for config, not viper." --scope project:myproject --wrong "viper"
+engram store "This project uses BurntSushi/toml for config, not viper." \
+  --type fact \
+  --scope project:myproject \
+  --trigger "when writing config loading or suggesting config libraries" \
+  --tags "config,toml,burntsushi,viper,parsing,configuration,settings" \
+  --wrong "viper"
 ```
 
 Next session, before you even say anything, the hook injects:
 ```
-[project:myproject] This project uses BurntSushi/toml for config, not viper.
+FACTS:
+  1. [project:myproject] This project uses BurntSushi/toml for config, not viper.
 ```
 
 The AI never makes that mistake again.
+
+## Correction types
+
+Each correction has a type that controls how it's presented to the AI:
+
+| Type | Purpose | Example |
+|---|---|---|
+| `fact` | Technical fact about the project or environment | "This project uses BurntSushi/toml for config." |
+| `preference` | Style, format, or workflow preference | "Prefer compact prose over bullet points." |
+| `constraint` | Something that must never be violated | "The write queue must never be removed — prevents data corruption." |
+| `gotcha` | A known trap or non-obvious behavior | "Go 1.22 does not support range over integers." |
+| `process` | A workflow step or procedure | "Always run the linter before committing." |
+
+When corrections are injected, they're grouped by type with constraints shown first:
+
+```
+CONSTRAINTS — never violate these:
+  1. [project:myproject] The write queue must never be removed.
+
+GOTCHAS — known traps:
+  2. [domain:go] Go 1.22 does not support range over integers.
+
+FACTS:
+  [project:myproject]
+    3. This project uses BurntSushi/toml for config, not viper.
+    4. The dev server binds to port 8080.
+    5. Auth tokens expire after 1 hour.
+
+PREFERENCES:
+  6. [global] Prefer compact prose over bullet points.
+```
+
+When 3+ corrections share the same scope, they're clustered under a single header to save tokens.
+
+## Trigger hints
+
+Each correction can have a trigger hint — a short description of *when* it should surface:
+
+```bash
+engram store "Always validate user input before SQL queries." \
+  --trigger "when writing database queries or API handlers"
+```
+
+Trigger hints are indexed by FTS5 and contribute to search relevance. They let the AI front-load semantic context at store time, so retrieval doesn't have to guess when a correction is relevant.
+
+## Retrieval
+
+engram uses a four-tier search cascade, stopping at the first tier that returns results:
+
+1. **Exact phrase match** — highest precision
+2. **AND match** — all non-stop-word terms must appear (handles reordering)
+3. **OR match** — any term matches (broadest recall)
+4. **LIKE fallback** — for special characters and single-character queries FTS5 rejects
+
+Results are ranked by a composite score that combines BM25 text relevance, hit frequency (log-scale — a correction used 100 times doesn't completely dominate one used 5 times), recency (180-day exponential decay), and confidence.
+
+Common English stop words (a, the, is, etc.) are filtered from queries to reduce noise.
 
 ## Benchmarks
 
@@ -119,18 +174,19 @@ Total time from process launch to output, including Go runtime startup, config l
 
 Pure query time measured by Go's `testing.B` framework:
 
-| Corpus size | BM25 search | BM25 + scope filter | Store | List |
-|---|---|---|---|---|
-| 10 | 0.16ms | - | 0.06ms | - |
-| 100 | 0.25ms | - | 0.06ms | - |
-| 1,000 | 0.88ms | - | 0.06ms | 0.27ms |
-| 10,000 | 5.5ms | 4.0ms | 0.06ms | - |
+| Corpus size | BM25 search | BM25 + scope filter | Phrase cascade | Store | List |
+|---|---|---|---|---|---|
+| 10 | 0.43ms | - | - | 0.08ms | - |
+| 100 | 0.55ms | - | - | 0.08ms | - |
+| 1,000 | 1.4ms | - | 1.2ms | 0.08ms | 0.06ms |
+| 10,000 | 6.3ms | 4.0ms | 4.7ms | 0.08ms | - |
 
 ### What this means
 
 - **Store is constant-time** regardless of corpus size (single INSERT + FTS trigger)
 - **Search scales linearly** with corpus but stays under 15ms even at 5,000 corrections
-- **The hook** runs `get --all` on every prompt — at typical corpus sizes (10-500 corrections), that's 3-4ms. Invisible.
+- **Phrase cascade is faster** than the old OR-only approach at large corpus sizes because the phrase tier short-circuits early
+- **The hook** runs `engram hook` on every prompt — reads stdin JSON, outputs corrections, and checks for correction patterns. At typical corpus sizes (10-500 corrections), that's 3-5ms. Invisible.
 - **No embedding inference on the hot path.** The entire retrieval is BM25 over SQLite FTS5. Compare to vector-DB systems that need 50-200ms per query for embedding inference alone.
 
 Run benchmarks yourself: `make bench`
@@ -145,17 +201,22 @@ Corrections are scoped so the right facts appear in the right context:
 
 engram auto-detects projects by walking up the directory tree looking for a `.engram` marker file (created by `engram init --project`). Commit this file to share project-scoped memory with your team.
 
+When corrections are selected for injection, they're prioritized by scope: global first, then current project, then domain/other. Within each tier, they're sorted by composite relevance score.
+
 ## CLI reference
 
 ```
 engram init                  Initialize config and database
-engram init --project        Create .engram project marker in current directory
-engram init --hooks          Install Claude Code slash commands and prompt hook
+engram init --project        Set up engram in current project (marker + hooks)
+engram init --hooks          Reinstall just the Claude Code integration
 
 engram store <fact>          Store a correction
   --scope <scope>              global, project:<name>, domain:<tag> (default: auto-detect)
+  --type <type>                fact, preference, constraint, gotcha, process (default: fact)
+  --trigger "<when>"           When to surface this correction (situation description)
   --wrong "<text>"             What was previously assumed incorrectly
-  --tags "<comma,separated>"   Tags for categorization
+  --tags "<comma,separated>"   Tags for retrieval (5-10 recommended)
+  --supersedes <id>            ID of the correction this replaces
   --source <user|inferred>     How the correction originated
 
 engram get [query]           Retrieve relevant corrections
@@ -167,14 +228,17 @@ engram get [query]           Retrieve relevant corrections
 engram list                  List all corrections
   --scope <scope>              Filter by scope
   --tag <tag>                  Filter by tag
+  --stale                      Show only corrections not retrieved in 180 days
   --limit <n>                  Max results
 
 engram search <query>        Search with BM25 relevance scores
 engram delete <id>           Delete a correction
 engram edit <id>             Edit a correction in $EDITOR
-engram stats                 Usage statistics and hit counts
+engram stats                 Usage statistics, type breakdown, and stale count
 engram export                Export as JSON or TOML
 engram import <file>         Import from JSON or TOML
+engram vacuum                Rebuild FTS index and optimize database
+engram hook                  Claude Code prompt hook (reads stdin, detects corrections)
 
 Global flag:
   --db <path>                Skip config loading, use database directly
@@ -184,7 +248,7 @@ Global flag:
 
 Everything lives in a single SQLite file at `~/.local/share/engram/engram.db`. Back it up with `cp`. Inspect it with `sqlite3`. Move it to a new machine by copying the file.
 
-Retrieval uses SQLite FTS5 with BM25 ranking, with automatic LIKE fallback for edge cases. No embedding models, no vector databases, no network calls.
+Retrieval uses SQLite FTS5 with BM25 ranking and a four-tier search cascade, with automatic LIKE fallback for edge cases. No embedding models, no vector databases, no network calls.
 
 ## Config
 

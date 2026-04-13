@@ -29,13 +29,15 @@ type Args struct {
 type flagDef struct {
 	name     string
 	desc     string
-	kind     string // "string", "bool", "int"
+	kind     string // "string", "bool", "int", "int64"
 	strPtr   *string
 	boolPtr  *bool
 	intPtr   *int
+	int64Ptr *int64
 	defStr   string
 	defBool  bool
 	defInt   int
+	defInt64 int64
 }
 
 func newArgs(args []string, helpPrefix string) *Args {
@@ -55,6 +57,11 @@ func (a *Args) Bool(ptr *bool, name string, def bool, desc string) {
 func (a *Args) Int(ptr *int, name string, def int, desc string) {
 	*ptr = def
 	a.flags = append(a.flags, flagDef{name: name, desc: desc, kind: "int", intPtr: ptr, defInt: def})
+}
+
+func (a *Args) Int64(ptr *int64, name string, def int64, desc string) {
+	*ptr = def
+	a.flags = append(a.flags, flagDef{name: name, desc: desc, kind: "int64", int64Ptr: ptr, defInt64: def})
 }
 
 func (a *Args) Parse() error {
@@ -120,6 +127,12 @@ func (a *Args) setFlag(f *flagDef, val string) error {
 			return fmt.Errorf("invalid value for --%s: %q (expected integer)", f.name, val)
 		}
 		*f.intPtr = n
+	case "int64":
+		n, err := strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid value for --%s: %q (expected integer)", f.name, val)
+		}
+		*f.int64Ptr = n
 	case "bool":
 		switch strings.ToLower(val) {
 		case "true", "1", "yes":
@@ -148,6 +161,8 @@ func (a *Args) helpText() string {
 				fmt.Fprintf(&b, "  --%-14s %s\n", f.name, f.desc)
 			case "int":
 				fmt.Fprintf(&b, "  --%-14s %s (default: %d)\n", f.name, f.desc, f.defInt)
+			case "int64":
+				fmt.Fprintf(&b, "  --%-14s %s (default: %d)\n", f.name, f.desc, f.defInt64)
 			case "string":
 				if f.defStr != "" {
 					fmt.Fprintf(&b, "  --%-14s %s (default: %s)\n", f.name, f.desc, f.defStr)

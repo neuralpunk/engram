@@ -63,13 +63,20 @@ func Import(args []string, dbPath string) error {
 
 	count := 0
 	for _, ec := range imported.Corrections {
+		corrType := ec.Type
+		if corrType == "" {
+			corrType = "fact"
+		}
 		c := &db.Correction{
-			Fact:       ec.Fact,
-			Wrong:      sql.NullString{String: ec.Wrong, Valid: ec.Wrong != ""},
-			Scope:      ec.Scope,
-			Tags:       sql.NullString{String: ec.Tags, Valid: ec.Tags != ""},
-			Source:     sql.NullString{String: ec.Source, Valid: ec.Source != ""},
-			Confidence: ec.Confidence,
+			Fact:         ec.Fact,
+			Wrong:        sql.NullString{String: ec.Wrong, Valid: ec.Wrong != ""},
+			Scope:        ec.Scope,
+			Tags:         sql.NullString{String: ec.Tags, Valid: ec.Tags != ""},
+			Source:       sql.NullString{String: ec.Source, Valid: ec.Source != ""},
+			Type:         corrType,
+			TriggerHint:  sql.NullString{String: ec.TriggerHint, Valid: ec.TriggerHint != ""},
+			SupersedesID: sql.NullInt64{Int64: ec.SupersedesID, Valid: ec.SupersedesID > 0},
+			Confidence:   ec.Confidence,
 		}
 		if c.Scope == "" {
 			c.Scope = "global"

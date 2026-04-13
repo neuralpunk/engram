@@ -162,6 +162,90 @@ func TestListByTag(t *testing.T) {
 	}
 }
 
+func TestSearchPhraseFirst(t *testing.T) {
+	db := mustOpenMemory(t)
+	// Store corrections where phrase match should rank differently than OR match
+	db.Store(&Correction{Fact: "Use BurntSushi/toml for config parsing.", Scope: "global", Confidence: 1.0})
+	db.Store(&Correction{Fact: "Config files are in the root directory.", Scope: "global", Confidence: 1.0})
+	db.Store(&Correction{Fact: "Parsing is handled by the parser module.", Scope: "global", Confidence: 1.0})
+
+	// "config parsing" as a phrase should match the first one best
+	results, err := db.Search("config parsing", nil, 10, 0)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results")
+	}
+	if results[0].Fact != "Use BurntSushi/toml for config parsing." {
+		t.Errorf("expected phrase match first, got %q", results[0].Fact)
+	}
+}
+
+func TestSearchStopWordFiltering(t *testing.T) {
+	db := mustOpenMemory(t)
+	db.Store(&Correction{Fact: "Authentication requires a JWT token.", Scope: "global", Confidence: 1.0})
+	db.Store(&Correction{Fact: "The database uses PostgreSQL.", Scope: "global", Confidence: 1.0})
+
+	// "fix the authentication" — "fix" and "the" should be filtered, "authentication" should match
+	results, err := db.Search("fix the authentication", nil, 10, 0)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results after stop word filtering")
+	}
+	if results[0].Fact != "Authentication requires a JWT token." {
+		t.Errorf("expected auth result, got %q", results[0].Fact)
+	}
+}
+
+func TestSearchTriggerHint(t *testing.T) {
+	db := mustOpenMemory(t)
+	db.Store(&Correction{
+		Fact:        "Always validate user input before SQL queries.",
+		Scope:       "global",
+		TriggerHint: sql.NullString{String: "when writing database queries or API handlers", Valid: true},
+		Confidence:  1.0,
+	})
+
+	results, err := db.Search("database queries API", nil, 10, 0)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected trigger_hint to be searchable")
+	}
+}
+
+func TestSearchFactOutranksWrong(t *testing.T) {
+	db := mustOpenMemory(t)
+	// One correction has "toml" in the fact, another has "toml" only in wrong
+	db.Store(&Correction{
+		Fact:       "This project uses BurntSushi/toml for config.",
+		Scope:      "global",
+		Confidence: 1.0,
+	})
+	db.Store(&Correction{
+		Fact:       "Use the standard library for parsing.",
+		Wrong:      sql.NullString{String: "toml was considered but rejected", Valid: true},
+		Scope:      "global",
+		Confidence: 1.0,
+	})
+
+	results, err := db.Search("toml", nil, 10, 0)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) < 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	// Fact match (weight 10) should outrank wrong match (weight 1)
+	if results[0].Fact != "This project uses BurntSushi/toml for config." {
+		t.Errorf("expected fact match first, got %q", results[0].Fact)
+	}
+}
+
 func TestSearchFTS(t *testing.T) {
 	db := mustOpenMemory(t)
 	db.Store(&Correction{Fact: "This project uses BurntSushi/toml for configuration.", Scope: "project:foo", Confidence: 1.0})
@@ -256,6 +340,100 @@ func TestIncrementHitCounts(t *testing.T) {
 	}
 	if !got.LastHit.Valid {
 		t.Error("expected last_hit to be set")
+	}
+}
+
+func TestNewColumnsExist(t *testing.T) {
+	db := mustOpenMemory(t)
+
+	// Verify type, trigger_hint, supersedes_id columns are present
+	c := &Correction{
+		Fact:         "Test with all new fields.",
+		Scope:        "global",
+		Type:         "constraint",
+		TriggerHint:  sql.NullString{String: "when refactoring", Valid: true},
+		SupersedesID: sql.NullInt64{Int64: 0, Valid: false},
+		Confidence:   1.0,
+	}
+	id, err := db.Store(c)
+	if err != nil {
+		t.Fatalf("store with new fields: %v", err)
+	}
+
+	got, err := db.Get(id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Type != "constraint" {
+		t.Errorf("type: got %q, want %q", got.Type, "constraint")
+	}
+	if !got.TriggerHint.Valid || got.TriggerHint.String != "when refactoring" {
+		t.Errorf("trigger_hint: got %v", got.TriggerHint)
+	}
+}
+
+func TestStoreWithSupersedes(t *testing.T) {
+	db := mustOpenMemory(t)
+
+	id1, _ := db.Store(&Correction{Fact: "old fact", Scope: "global", Confidence: 1.0})
+	id2, err := db.Store(&Correction{
+		Fact:         "new fact replaces old",
+		Scope:        "global",
+		SupersedesID: sql.NullInt64{Int64: id1, Valid: true},
+		Confidence:   1.0,
+	})
+	if err != nil {
+		t.Fatalf("store with supersedes: %v", err)
+	}
+
+	got, _ := db.Get(id2)
+	if !got.SupersedesID.Valid || got.SupersedesID.Int64 != id1 {
+		t.Errorf("supersedes_id: got %v, want %d", got.SupersedesID, id1)
+	}
+}
+
+func TestTypeEnumValidation(t *testing.T) {
+	db := mustOpenMemory(t)
+
+	// Valid types should succeed
+	for _, typ := range []string{"fact", "preference", "constraint", "gotcha", "process"} {
+		_, err := db.Store(&Correction{Fact: "test " + typ, Scope: "global", Type: typ, Confidence: 1.0})
+		if err != nil {
+			t.Errorf("valid type %q failed: %v", typ, err)
+		}
+	}
+
+	// Invalid type should fail (CHECK constraint)
+	_, err := db.Store(&Correction{Fact: "bad type", Scope: "global", Type: "invalid", Confidence: 1.0})
+	if err == nil {
+		t.Error("expected error for invalid type, got nil")
+	}
+}
+
+func TestListStale(t *testing.T) {
+	db := mustOpenMemory(t)
+
+	// Store a correction with zero hits (should be stale)
+	db.Store(&Correction{Fact: "never used", Scope: "global", Confidence: 1.0})
+
+	// Store one and give it hits
+	id2, _ := db.Store(&Correction{Fact: "often used", Scope: "global", Confidence: 1.0})
+	db.IncrementHitCounts([]int64{id2})
+
+	stale, err := db.List("", "", 0, true)
+	if err != nil {
+		t.Fatalf("list stale: %v", err)
+	}
+
+	// The "never used" one should appear (hit_count=0)
+	found := false
+	for _, c := range stale {
+		if c.Fact == "never used" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected 'never used' correction in stale list")
 	}
 }
 
