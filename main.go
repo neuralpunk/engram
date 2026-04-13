@@ -8,7 +8,7 @@ import (
 	"engram/cmd"
 )
 
-const version = "0.3.0"
+const version = "0.4.0"
 
 const usage = `engram - correction memory for LLMs
 

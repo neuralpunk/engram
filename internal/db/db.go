@@ -4,8 +4,12 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -113,30 +117,72 @@ func (db *DB) Vacuum() error {
 	return err
 }
 
-// RebuildFTS rebuilds the FTS5 index from scratch.
+// RebuildFTS rebuilds the FTS5 indexes from scratch.
 func (db *DB) RebuildFTS() error {
-	_, err := db.conn.Exec("INSERT INTO corrections_fts(corrections_fts) VALUES('rebuild')")
-	return err
+	if _, err := db.conn.Exec("INSERT INTO corrections_fts(corrections_fts) VALUES('rebuild')"); err != nil {
+		return err
+	}
+	// Rebuild trigram index if it exists (schema version >= 3)
+	db.conn.Exec("INSERT INTO corrections_fts_tri(corrections_fts_tri) VALUES('rebuild')")
+	return nil
 }
 
 func (db *DB) migrate() error {
-	var version int
+	// Determine current schema version (0 if schema_version table doesn't exist)
+	var current int
 	err := db.conn.QueryRow(
 		"SELECT COALESCE(MAX(version), 0) FROM schema_version",
-	).Scan(&version)
+	).Scan(&current)
 	if err != nil {
-		version = 0 // schema_version table doesn't exist yet
-	}
-	if version >= 1 {
-		return nil // already applied
+		current = 0
 	}
 
-	schema, err := schemaFS.ReadFile("schema/001_initial.sql")
+	// Discover all migration files from embedded FS
+	entries, err := fs.ReadDir(schemaFS, "schema")
 	if err != nil {
-		return fmt.Errorf("reading schema: %w", err)
+		return fmt.Errorf("reading schema directory: %w", err)
 	}
-	if _, err := db.conn.Exec(string(schema)); err != nil {
-		return fmt.Errorf("applying schema: %w", err)
+
+	// Sort lexicographically — zero-padded prefixes give correct numeric order
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name() < entries[j].Name()
+	})
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+
+		// Parse migration version from filename prefix (e.g. "001" from "001_initial.sql")
+		parts := strings.SplitN(entry.Name(), "_", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		ver, err := strconv.Atoi(parts[0])
+		if err != nil {
+			continue
+		}
+
+		if ver <= current {
+			continue // already applied
+		}
+
+		data, err := schemaFS.ReadFile("schema/" + entry.Name())
+		if err != nil {
+			return fmt.Errorf("reading migration %s: %w", entry.Name(), err)
+		}
+
+		// Execute without Go-level transaction wrapping: SQLite virtual table
+		// DDL (CREATE/DROP on FTS5 tables) does not work reliably inside
+		// explicit transactions in all configurations. Each migration file
+		// is responsible for its own schema_version INSERT.
+		if _, err := db.conn.Exec(string(data)); err != nil {
+			return fmt.Errorf("applying migration %s: %w", entry.Name(), err)
+		}
+
+		// Update current so subsequent migrations in this run are evaluated correctly
+		current = ver
 	}
+
 	return nil
 }

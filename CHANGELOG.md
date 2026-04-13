@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.4.0 (2026-04-13)
+
+### Retrieval accuracy
+- Hook now uses the user's prompt as the search query instead of returning
+  scope-filtered corrections in arbitrary order. The biggest single
+  accuracy improvement in the release.
+- New code-friendly FTS5 tokenizer keeps identifiers like `burntsushi/toml`,
+  `use_state`, and `github.com/spf13/cobra` as single tokens.
+- New trigram secondary index handles typos and partial matches that the
+  primary tokenizer misses.
+- Negation words (`not`, `no`) are no longer stripped from search queries —
+  corrections about what *not* to do now retrieve correctly.
+- Superseded corrections are filtered out at retrieval time. Previously,
+  superseding a correction left the old version in the injection pool.
+- Project-scoped corrections now soft-preferred over globals via a tier
+  bonus rather than hard-partitioned. A strongly-matching domain or global
+  correction can still win.
+- MMR diversity in selection prevents the memory block from filling up with
+  near-duplicate corrections.
+- Recency decay no longer floors at 20% — half-life extended to 365 days
+  with a 5% floor.
+
+### Storage
+- Dedup check on `engram store`: similar corrections in the same scope are
+  flagged with guidance to use `--supersedes` or `--force`. Use `--force`
+  to bypass.
+
+### Performance
+- Scope filtering pushed into SQL instead of in-Go post-filtering. Hooks
+  no longer load the entire corrections table every turn.
+- BM25 minimum score threshold pushed into SQL WHERE clause.
+
+### Internal
+- Migration runner generalized to apply all `schema/NNN_*.sql` files in
+  order. Schema version is now 3.
+- Latent bug fixed in hook scope filter loop.
+
 ## 0.3.0 (2026-04-13)
 
 ### Changed

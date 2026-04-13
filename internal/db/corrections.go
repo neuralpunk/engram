@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -137,11 +138,16 @@ func (db *DB) Delete(id int64) error {
 	return nil
 }
 
+// supersessionFilter is the WHERE clause that excludes corrections that have been
+// replaced by another correction via supersedes_id.
+const supersessionFilter = " AND id NOT IN (SELECT supersedes_id FROM corrections WHERE supersedes_id IS NOT NULL)"
+
 // List returns corrections filtered by scope and/or tag.
 // Pass empty strings to skip filtering. Use limit=0 for no limit.
 // If stale is true, returns only corrections not retrieved in 180 days.
 func (db *DB) List(scope string, tag string, limit int, stale ...bool) ([]Correction, error) {
 	query := "SELECT " + correctionColumns + " FROM corrections WHERE 1=1"
+	query += supersessionFilter
 	var args []any
 
 	if scope != "" && scope != "all" {
@@ -165,6 +171,50 @@ func (db *DB) List(scope string, tag string, limit int, stale ...bool) ([]Correc
 	rows, err := db.conn.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing corrections: %w", err)
+	}
+	defer rows.Close()
+
+	var corrections []Correction
+	for rows.Next() {
+		var c Correction
+		if err := rows.Scan(&c.ID, &c.Fact, &c.Wrong, &c.Scope, &c.Tags, &c.Source,
+			&c.Type, &c.TriggerHint, &c.SupersedesID,
+			&c.Confidence, &c.CreatedAt, &c.UpdatedAt, &c.HitCount, &c.LastHit); err != nil {
+			return nil, fmt.Errorf("scanning correction: %w", err)
+		}
+		corrections = append(corrections, c)
+	}
+	return corrections, rows.Err()
+}
+
+// ListByScopes returns corrections whose scope is in the given set.
+// Pass nil or empty for no scope filter. Other parameters match List.
+func (db *DB) ListByScopes(scopes []string, tag string, limit int) ([]Correction, error) {
+	query := "SELECT " + correctionColumns + " FROM corrections WHERE 1=1"
+	query += supersessionFilter
+	var args []any
+
+	if len(scopes) > 0 {
+		placeholders := make([]string, len(scopes))
+		for i, s := range scopes {
+			placeholders[i] = "?"
+			args = append(args, s)
+		}
+		query += fmt.Sprintf(" AND scope IN (%s)", strings.Join(placeholders, ","))
+	}
+	if tag != "" {
+		query += " AND (',' || tags || ',') LIKE ?"
+		args = append(args, "%,"+tag+",%")
+	}
+
+	query += " ORDER BY created_at DESC"
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", limit)
+	}
+
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing corrections by scopes: %w", err)
 	}
 	defer rows.Close()
 

@@ -53,29 +53,22 @@ func Get(args []string, dbPath string) error {
 	var selected []db.Correction
 
 	if all || query == "" {
-		corrections, err := database.List("", "", 0)
+		var corrections []db.Correction
+		var err error
+		if len(scopes) > 0 {
+			corrections, err = database.ListByScopes(scopes, "", 0)
+		} else {
+			corrections, err = database.List("", "", 0)
+		}
 		if err != nil {
 			database.Close()
 			return err
 		}
 
-		if len(scopes) > 0 {
-			scopeSet := make(map[string]bool, len(scopes))
-			for _, s := range scopes {
-				scopeSet[s] = true
-			}
-			filtered := corrections[:0:0]
-			for _, c := range corrections {
-				if scopeSet[c.Scope] {
-					filtered = append(filtered, c)
-				}
-			}
-			corrections = filtered
-		}
-
 		scored := make([]db.ScoredCorrection, len(corrections))
 		for i, c := range corrections {
-			scored[i] = db.ScoredCorrection{Correction: c, Score: -1.0}
+			// 0 = no BM25 signal; compositeScore treats this as neutral
+			scored[i] = db.ScoredCorrection{Correction: c, Score: 0}
 		}
 		selected = format.SelectCorrections(scored, maxCorrections, cfg.Injection.MaxTokens, detectedProject)
 	} else {

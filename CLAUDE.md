@@ -233,7 +233,7 @@ We talked about how the project works and some things that were wrong with prior
 engram init               Global init: create config and DB
 engram init --project     Set up engram in current project (marker + hooks)
 engram init --hooks       Reinstall just the Claude Code integration
-engram store <fact>       Store a correction (with --scope, --wrong, --tags, --source flags)
+engram store <fact>       Store a correction (with --scope, --wrong, --tags, --source, --force flags)
 engram get [query]        Retrieve relevant corrections (with --all, --raw, --limit, --scope flags)
 engram list               List all corrections (with --scope, --tag, --limit flags)
 engram search <query>     Search corrections with BM25 scores
@@ -282,7 +282,7 @@ Run `engram init --hooks` to install automatically, or add manually to `.claude/
 }
 ```
 
-The hook injects all corrections for the current scope at every prompt. If engram isn't installed or the DB is empty, the `|| true` ensures it fails silently.
+The hook uses the user's prompt as a search query to retrieve the most relevant corrections. If no search results match, it falls back to scope-filtered listing. If engram isn't installed or the DB is empty, the `|| true` ensures it fails silently.
 
 ---
 
@@ -308,11 +308,16 @@ file  = ""                    # empty = stderr
 
 ## Retrieval algorithm
 
-1. Receive query (from `engram get` or hook).
+1. Receive query (from `engram get` or hook — the hook uses the user's prompt as the query).
 2. Walk up the directory tree for `.engram`. Extract project name if found.
-3. Query `corrections_fts` filtered to applicable scopes: always `global`, plus any detected `project:` and relevant `domain:` scopes.
-4. Rank by BM25 score. Apply `min_score` threshold.
-5. Fill token budget: `global` first, then BM25-ranked project/domain.
+3. Run a five-tier search cascade against applicable scopes (`global` + detected `project:` + `domain:` scopes):
+   - Tier 1: Exact phrase match (highest precision)
+   - Tier 2: AND match (all terms present, handles reordering)
+   - Tier 3: OR match (broadest recall)
+   - Tier 4: Trigram match (partial/substring via secondary FTS5 index)
+   - Tier 5: LIKE fallback (for edge cases FTS5 rejects)
+4. Rank by composite score: BM25 relevance × confidence × frequency × recency × tier bonus (project 1.5×, global 1.2×, domain 1.0×).
+5. Select corrections using MMR diversity to avoid near-duplicate saturation, within token and count budgets. Superseded corrections are excluded.
 6. Format as `<engram-memory>` block and output to stdout.
 7. Increment `hit_count` on each used correction.
 
@@ -365,9 +370,12 @@ engram/
 │   └── format/
 │       └── memory_block.go    <- engram-memory block renderer
 ├── schema/
-│   └── 001_initial.sql        <- base schema (go:embed)
+│   ├── 001_initial.sql        <- base schema (go:embed)
+│   ├── 002_tokenizer.sql      <- code-friendly FTS5 tokenizer
+│   └── 003_trigram.sql        <- trigram secondary index
 └── testdata/
-    └── sample_corrections.json
+    ├── sample_corrections.json
+    └── realworld.sh           <- end-to-end shell test script
 ```
 
 ---

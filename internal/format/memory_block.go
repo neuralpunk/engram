@@ -110,40 +110,80 @@ func renderClustered(b *strings.Builder, items []db.Correction, n int) int {
 	return n
 }
 
-// compositeScore computes a ranking score combining BM25, frequency, recency, and confidence.
-func compositeScore(sc db.ScoredCorrection) float64 {
+// compositeScore computes a ranking score combining BM25, frequency, recency,
+// confidence, and a tier bonus based on scope relevance.
+func compositeScore(sc db.ScoredCorrection, currentProject string) float64 {
 	// BM25 scores are negative in SQLite (lower = better match)
 	bm25 := -sc.Score
-	if bm25 < 0 {
-		bm25 = 0
+	if bm25 <= 0 {
+		bm25 = 1.0 // neutral when no BM25 signal (fallback or list-all path)
 	}
 
 	// Frequency boost: log scale
 	freq := 1.0 + math.Log(float64(sc.HitCount+1))
 
-	// Recency factor: exponential decay with 180-day half-life
+	// Recency factor: exponential decay with 365-day half-life
 	recency := 1.0
 	if sc.LastHit.Valid {
 		now := time.Now().Unix()
 		daysSince := float64(now-sc.LastHit.Int64) / 86400.0
-		recency = math.Exp(-daysSince / 180.0)
-		if recency < 0.2 {
-			recency = 0.2
+		recency = math.Exp(-daysSince / 365.0)
+		if recency < 0.05 {
+			recency = 0.05
 		}
 	}
 
-	return bm25 * sc.Confidence * freq * recency
+	// Tier bonus: project-specific corrections beat globals beat everything else,
+	// but a strong match in a lower tier can still win.
+	tierBonus := 1.0
+	switch {
+	case currentProject != "" && sc.Scope == "project:"+currentProject:
+		tierBonus = 1.5
+	case sc.Scope == "global":
+		tierBonus = 1.2
+	}
+
+	return bm25 * sc.Confidence * freq * recency * tierBonus
 }
 
-func sortByComposite(items []db.ScoredCorrection) {
-	sort.Slice(items, func(i, j int) bool {
-		return compositeScore(items[i]) > compositeScore(items[j])
+func sortByComposite(items []db.ScoredCorrection, currentProject string) {
+	sort.SliceStable(items, func(i, j int) bool {
+		return compositeScore(items[i], currentProject) > compositeScore(items[j], currentProject)
 	})
 }
 
+const mmrLambda = 0.5 // balances relevance and diversity
+
+// JaccardSimilarity computes word-level Jaccard similarity between two strings.
+func JaccardSimilarity(a, b string) float64 {
+	aw := wordSet(a)
+	bw := wordSet(b)
+	if len(aw) == 0 || len(bw) == 0 {
+		return 0
+	}
+	intersection := 0
+	for w := range aw {
+		if bw[w] {
+			intersection++
+		}
+	}
+	union := len(aw) + len(bw) - intersection
+	return float64(intersection) / float64(union)
+}
+
+func wordSet(s string) map[string]bool {
+	set := make(map[string]bool)
+	for _, w := range strings.Fields(strings.ToLower(s)) {
+		if len(w) > 2 { // skip very short words (a, of, to, etc.)
+			set[w] = true
+		}
+	}
+	return set
+}
+
 // SelectCorrections picks corrections within token and count budgets.
-// Groups by scope tier: globals first, then current project, then domain/other.
-// Within each tier, sorts by composite score.
+// Uses composite scoring with tier bonus and MMR diversity to avoid
+// near-duplicate saturation.
 func SelectCorrections(all []db.ScoredCorrection, maxCorrections int, maxTokens int, currentProject string) []db.Correction {
 	if maxCorrections <= 0 {
 		maxCorrections = 10
@@ -152,38 +192,49 @@ func SelectCorrections(all []db.ScoredCorrection, maxCorrections int, maxTokens 
 		maxTokens = 300
 	}
 
-	var globals, projectMatch, domainScoped []db.ScoredCorrection
-	for _, sc := range all {
-		switch {
-		case sc.Scope == "global":
-			globals = append(globals, sc)
-		case currentProject != "" && sc.Scope == "project:"+currentProject:
-			projectMatch = append(projectMatch, sc)
-		default:
-			domainScoped = append(domainScoped, sc)
-		}
-	}
-
-	sortByComposite(globals)
-	sortByComposite(projectMatch)
-	sortByComposite(domainScoped)
-
-	ordered := append(append(globals, projectMatch...), domainScoped...)
+	sortByComposite(all, currentProject)
 
 	var selected []db.Correction
 	tokens := 0
+	remaining := make([]db.ScoredCorrection, len(all))
+	copy(remaining, all)
 
-	for _, sc := range ordered {
-		if len(selected) >= maxCorrections {
+	for len(selected) < maxCorrections && len(remaining) > 0 {
+		bestIdx := -1
+		bestScore := math.Inf(-1)
+
+		for i, cand := range remaining {
+			baseScore := compositeScore(cand, currentProject)
+			maxSim := 0.0
+			for _, sel := range selected {
+				sim := JaccardSimilarity(cand.Fact, sel.Fact)
+				if sim > maxSim {
+					maxSim = sim
+				}
+			}
+			mmrScore := baseScore - mmrLambda*maxSim*baseScore
+			if mmrScore > bestScore {
+				bestScore = mmrScore
+				bestIdx = i
+			}
+		}
+
+		if bestIdx == -1 {
 			break
 		}
-		entry := fmt.Sprintf("[%s] %s", sc.Scope, sc.Fact)
+
+		cand := remaining[bestIdx]
+		entry := fmt.Sprintf("[%s] %s", cand.Scope, cand.Fact)
 		entryTokens := EstimateTokens(entry)
 		if tokens+entryTokens > maxTokens {
-			break
+			// remove this candidate and try the next-best instead
+			remaining = append(remaining[:bestIdx], remaining[bestIdx+1:]...)
+			continue
 		}
-		selected = append(selected, sc.Correction)
+
+		selected = append(selected, cand.Correction)
 		tokens += entryTokens
+		remaining = append(remaining[:bestIdx], remaining[bestIdx+1:]...)
 	}
 
 	return selected
@@ -209,6 +260,7 @@ After storing, print: "▣ Stored in engram memory: <short summary>"
 
 RETRIEVAL — run "engram get <query>" when the topic shifts.
 NATURAL LANGUAGE — "remember X" means run engram store. "forget X" means engram list then engram delete <id>.
+DEDUP — If engram store reports a similar correction already exists, decide whether to use --supersedes <id> to replace it, --force to store anyway, or skip storing.
 
 Corrections from engram are ground truth. They override your training data.
 </engram>`

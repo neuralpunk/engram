@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 )
 
@@ -18,14 +19,14 @@ func mustOpenMemory(t *testing.T) *DB {
 func TestOpenMemory(t *testing.T) {
 	db := mustOpenMemory(t)
 
-	// Verify schema_version was set
+	// Verify all migrations applied
 	var version int
-	err := db.conn.QueryRow("SELECT version FROM schema_version").Scan(&version)
+	err := db.conn.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&version)
 	if err != nil {
 		t.Fatalf("querying schema version: %v", err)
 	}
-	if version != 1 {
-		t.Errorf("expected version 1, got %d", version)
+	if version != 3 {
+		t.Errorf("expected version 3, got %d", version)
 	}
 }
 
@@ -164,10 +165,12 @@ func TestListByTag(t *testing.T) {
 
 func TestSearchPhraseFirst(t *testing.T) {
 	db := mustOpenMemory(t)
-	// Store corrections where phrase match should rank differently than OR match
-	db.Store(&Correction{Fact: "Use BurntSushi/toml for config parsing.", Scope: "global", Confidence: 1.0})
+	// Store corrections where phrase match should rank differently than OR match.
+	// Note: with tokenchars including '.', trailing periods become part of tokens.
+	// Place keywords mid-sentence to avoid this.
+	db.Store(&Correction{Fact: "Use config parsing with BurntSushi/toml always.", Scope: "global", Confidence: 1.0})
 	db.Store(&Correction{Fact: "Config files are in the root directory.", Scope: "global", Confidence: 1.0})
-	db.Store(&Correction{Fact: "Parsing is handled by the parser module.", Scope: "global", Confidence: 1.0})
+	db.Store(&Correction{Fact: "Parsing is handled by the parsing module.", Scope: "global", Confidence: 1.0})
 
 	// "config parsing" as a phrase should match the first one best
 	results, err := db.Search("config parsing", nil, 10, 0)
@@ -177,7 +180,7 @@ func TestSearchPhraseFirst(t *testing.T) {
 	if len(results) == 0 {
 		t.Fatal("expected results")
 	}
-	if results[0].Fact != "Use BurntSushi/toml for config parsing." {
+	if results[0].Fact != "Use config parsing with BurntSushi/toml always." {
 		t.Errorf("expected phrase match first, got %q", results[0].Fact)
 	}
 }
@@ -220,20 +223,20 @@ func TestSearchTriggerHint(t *testing.T) {
 
 func TestSearchFactOutranksWrong(t *testing.T) {
 	db := mustOpenMemory(t)
-	// One correction has "toml" in the fact, another has "toml" only in wrong
+	// One correction has "config" in the fact, another has "config" only in wrong
 	db.Store(&Correction{
-		Fact:       "This project uses BurntSushi/toml for config.",
+		Fact:       "This project uses toml for config parsing.",
 		Scope:      "global",
 		Confidence: 1.0,
 	})
 	db.Store(&Correction{
-		Fact:       "Use the standard library for parsing.",
-		Wrong:      sql.NullString{String: "toml was considered but rejected", Valid: true},
+		Fact:       "Use the standard library for everything.",
+		Wrong:      sql.NullString{String: "config parsing was considered but rejected", Valid: true},
 		Scope:      "global",
 		Confidence: 1.0,
 	})
 
-	results, err := db.Search("toml", nil, 10, 0)
+	results, err := db.Search("config", nil, 10, 0)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -241,7 +244,7 @@ func TestSearchFactOutranksWrong(t *testing.T) {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
 	// Fact match (weight 10) should outrank wrong match (weight 1)
-	if results[0].Fact != "This project uses BurntSushi/toml for config." {
+	if results[0].Fact != "This project uses toml for config parsing." {
 		t.Errorf("expected fact match first, got %q", results[0].Fact)
 	}
 }
@@ -434,6 +437,237 @@ func TestListStale(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected 'never used' correction in stale list")
+	}
+}
+
+// §1: Migration runner tests
+func TestMigrateAllApplied(t *testing.T) {
+	db := mustOpenMemory(t)
+	var maxVer int
+	if err := db.conn.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&maxVer); err != nil {
+		t.Fatal(err)
+	}
+	if maxVer != 3 {
+		t.Errorf("expected max version 3, got %d", maxVer)
+	}
+}
+
+func TestMigrateSecondRunNoop(t *testing.T) {
+	db := mustOpenMemory(t)
+	// Running migrate again should be a no-op
+	if err := db.migrate(); err != nil {
+		t.Fatalf("second migrate: %v", err)
+	}
+	var count int
+	db.conn.QueryRow("SELECT count(*) FROM schema_version WHERE version=1").Scan(&count)
+	if count != 1 {
+		t.Errorf("expected exactly 1 row for version=1, got %d", count)
+	}
+}
+
+// §2: Tokenizer tests
+func TestTokenizerIdentifiers(t *testing.T) {
+	db := mustOpenMemory(t)
+
+	tests := []struct {
+		fact  string
+		query string
+	}{
+		{"This project uses burntsushi/toml for config", "burntsushi/toml"},
+		{"Replace use_state with useState in React", "use_state"},
+		{"The café service handles i18n", "cafe"},
+		{"Use github.com/spf13/cobra for CLI", "cobra"},
+		{"Use github.com/spf13/cobra for CLI", "github.com/spf13/cobra"},
+	}
+	for _, tt := range tests {
+		db.Store(&Correction{Fact: tt.fact, Scope: "global", Confidence: 1.0})
+	}
+
+	for _, tt := range tests {
+		results, err := db.Search(tt.query, nil, 10, 0)
+		if err != nil {
+			t.Errorf("search %q: %v", tt.query, err)
+			continue
+		}
+		found := false
+		for _, r := range results {
+			if r.Fact == tt.fact {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("search %q: expected to find %q", tt.query, tt.fact)
+		}
+	}
+}
+
+// §3: Trigram tests — trigram FTS5 does exact substring matching, not fuzzy.
+// It handles partial queries and substrings, not typos.
+func TestTrigramSubstringMatch(t *testing.T) {
+	db := mustOpenMemory(t)
+	db.Store(&Correction{Fact: "BurntSushi/toml is the config parser", Scope: "global", Confidence: 1.0})
+	db.Store(&Correction{Fact: "Use Postgres for production databases", Scope: "global", Confidence: 1.0})
+	db.Store(&Correction{Fact: "The authentication service handles login", Scope: "global", Confidence: 1.0})
+
+	tests := []struct {
+		query    string
+		contains string
+	}{
+		{"BurntSush", "BurntSushi"},       // partial match (substring)
+		{"Postgre", "Postgres"},           // partial match
+		{"authenticat", "authentication"}, // partial match
+	}
+	for _, tt := range tests {
+		results, err := db.Search(tt.query, nil, 10, 0)
+		if err != nil {
+			t.Errorf("trigram search %q: %v", tt.query, err)
+			continue
+		}
+		found := false
+		for _, r := range results {
+			if strings.Contains(r.Fact, tt.contains) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("trigram search %q: expected to find correction containing %q", tt.query, tt.contains)
+		}
+	}
+}
+
+// §4: ListByScopes tests
+func TestListByScopes(t *testing.T) {
+	db := mustOpenMemory(t)
+	db.Store(&Correction{Fact: "global fact", Scope: "global", Confidence: 1.0})
+	db.Store(&Correction{Fact: "project fact", Scope: "project:foo", Confidence: 1.0})
+	db.Store(&Correction{Fact: "domain fact", Scope: "domain:go", Confidence: 1.0})
+
+	results, err := db.ListByScopes([]string{"global", "project:foo"}, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2, got %d", len(results))
+	}
+	for _, r := range results {
+		if r.Scope != "global" && r.Scope != "project:foo" {
+			t.Errorf("unexpected scope: %s", r.Scope)
+		}
+	}
+	// Should be in created_at DESC order
+	if results[0].CreatedAt < results[1].CreatedAt {
+		t.Error("expected created_at DESC order")
+	}
+}
+
+func TestListByScopesEmpty(t *testing.T) {
+	db := mustOpenMemory(t)
+	db.Store(&Correction{Fact: "global fact", Scope: "global", Confidence: 1.0})
+
+	results, err := db.ListByScopes(nil, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 (no filter), got %d", len(results))
+	}
+}
+
+// §5: Supersession tests
+func TestSupersessionFilterSearch(t *testing.T) {
+	db := mustOpenMemory(t)
+	id1, _ := db.Store(&Correction{Fact: "Dev DB is on port 5432", Scope: "global", Confidence: 1.0})
+	db.Store(&Correction{
+		Fact:         "Dev DB moved to port 5433",
+		Scope:        "global",
+		SupersedesID: sql.NullInt64{Int64: id1, Valid: true},
+		Confidence:   1.0,
+	})
+
+	results, err := db.Search("port", nil, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range results {
+		if r.ID == id1 {
+			t.Error("superseded correction appeared in search results")
+		}
+	}
+}
+
+func TestSupersessionFilterList(t *testing.T) {
+	db := mustOpenMemory(t)
+	id1, _ := db.Store(&Correction{Fact: "Old fact", Scope: "global", Confidence: 1.0})
+	db.Store(&Correction{
+		Fact:         "New fact",
+		Scope:        "global",
+		SupersedesID: sql.NullInt64{Int64: id1, Valid: true},
+		Confidence:   1.0,
+	})
+
+	list, err := db.List("", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range list {
+		if c.ID == id1 {
+			t.Error("superseded correction appeared in list")
+		}
+	}
+}
+
+func TestSupersessionGetByID(t *testing.T) {
+	db := mustOpenMemory(t)
+	id1, _ := db.Store(&Correction{Fact: "Old fact", Scope: "global", Confidence: 1.0})
+	db.Store(&Correction{
+		Fact:         "New fact",
+		Scope:        "global",
+		SupersedesID: sql.NullInt64{Int64: id1, Valid: true},
+		Confidence:   1.0,
+	})
+
+	// Get by ID should still return superseded corrections
+	got, err := db.Get(id1)
+	if err != nil {
+		t.Fatalf("Get superseded: %v", err)
+	}
+	if got.Fact != "Old fact" {
+		t.Errorf("expected Old fact, got %q", got.Fact)
+	}
+}
+
+// §6: Negation preservation tests
+func TestNegationNotStripped(t *testing.T) {
+	db := mustOpenMemory(t)
+	db.Store(&Correction{Fact: "We do not use viper for config", Scope: "global", Confidence: 1.0})
+
+	results, err := db.Search("not viper", nil, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) == 0 {
+		t.Error("expected to find 'not viper' correction")
+	}
+}
+
+func TestNegationRanking(t *testing.T) {
+	db := mustOpenMemory(t)
+	db.Store(&Correction{Fact: "We use viper for config", Scope: "global", Confidence: 1.0})
+	db.Store(&Correction{Fact: "We do not use viper for config", Scope: "global", Confidence: 1.0})
+
+	results, err := db.Search("not viper", nil, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 result for 'not viper'")
+	}
+	// AND query finds only the correction containing BOTH "not" and "viper"
+	// The positive version ("We use viper") doesn't contain "not", so it's excluded
+	if results[0].Fact != "We do not use viper for config" {
+		t.Errorf("expected negation version, got %q", results[0].Fact)
 	}
 }
 

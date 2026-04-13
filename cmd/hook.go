@@ -27,13 +27,14 @@ var correctionPatterns = regexp.MustCompile(
 		`|\bnot (right|correct|true)\b` +
 		`|\byou'?re (wrong|mistaken|incorrect)` +
 		`|\bI told you\b` +
-		`|\bstop doing\b` +
+		`|\bstop \w+ing\b` +
 		`|\bwe (don'?t|do not) use\b` +
-		`|\bwe use .+ not\b` +
+		`|\b(?:we\s+)?use\s+.+\s+not\s+\S+` +
 		`|\bit'?s .+ not .+` +
 		`|\bwrong[.!]` +
 		`|\bI('?ve| have) (already|told|said|mentioned)\b` +
-		`|\bplease (stop|don'?t|do not)\b` +
+		`|\b(?:please\s+)?(?:don'?t|do not)\s+\w+` +
+		`|\bnever\s+\w+` +
 		`|\bfor the last time\b` +
 		`|\bhow many times\b` +
 		`|\bremember (that|this|:)\b` +
@@ -75,34 +76,42 @@ func Hook(args []string, dbPath string) error {
 		scopes = []string{"global", "project:" + detectedProject}
 	}
 
-	corrections, err := database.List("", "", 0)
-	if err != nil {
-		database.Close()
-		fmt.Print(format.FormatSystemPrompt(nil))
-		if prompt != "" && correctionPatterns.MatchString(prompt) {
-			printCorrectionAlert()
+	var scored []db.ScoredCorrection
+
+	// Use the prompt as a search query for ranked retrieval
+	if prompt != "" {
+		// Truncate to last 2000 runes to avoid blowing out the FTS query parser
+		truncated := truncateRunes(prompt, 2000)
+		results, err := database.Search(truncated, scopes, cfg.Injection.MaxCorrections*2, cfg.Injection.MinScore)
+		if err == nil && len(results) > 0 {
+			scored = results
 		}
-		return nil
 	}
 
-	if len(scopes) > 0 {
-		scopeSet := make(map[string]bool, len(scopes))
-		for s := range scopes {
-			scopeSet[scopes[s]] = true
+	// Fallback: if no search results or no prompt, use scope-filtered list
+	if len(scored) == 0 {
+		var corrections []db.Correction
+		var err error
+		if len(scopes) > 0 {
+			corrections, err = database.ListByScopes(scopes, "", 0)
+		} else {
+			corrections, err = database.List("", "", 0)
 		}
-		filtered := corrections[:0:0]
-		for _, c := range corrections {
-			if scopeSet[c.Scope] {
-				filtered = append(filtered, c)
+		if err != nil {
+			database.Close()
+			fmt.Print(format.FormatSystemPrompt(nil))
+			if prompt != "" && correctionPatterns.MatchString(prompt) {
+				printCorrectionAlert()
 			}
+			return nil
 		}
-		corrections = filtered
+		scored = make([]db.ScoredCorrection, len(corrections))
+		for i, c := range corrections {
+			// 0 = no BM25 signal; compositeScore treats this as neutral
+			scored[i] = db.ScoredCorrection{Correction: c, Score: 0}
+		}
 	}
 
-	scored := make([]db.ScoredCorrection, len(corrections))
-	for i, c := range corrections {
-		scored[i] = db.ScoredCorrection{Correction: c, Score: -1.0}
-	}
 	selected := format.SelectCorrections(scored, cfg.Injection.MaxCorrections, cfg.Injection.MaxTokens, detectedProject)
 
 	// Output behavior prompt + corrections
@@ -124,6 +133,15 @@ func Hook(args []string, dbPath string) error {
 	database.Close()
 
 	return nil
+}
+
+// truncateRunes returns the last n runes of s without slicing mid-UTF-8.
+func truncateRunes(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[len(runes)-n:])
 }
 
 func printCorrectionAlert() {

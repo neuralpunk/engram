@@ -14,7 +14,7 @@ It stores corrections as atomic facts in a local SQLite database, retrieves rele
 You correct the AI  →  engram stores the fact  →  next session, engram injects it  →  mistake never repeats
 ```
 
-engram is a single CLI binary. No daemon, no server, no cloud. It integrates with Claude Code via a prompt hook that runs on every message. The hook reads the user's prompt, detects correction patterns (like "actually," "that's wrong," "we use X not Y"), and injects a targeted instruction that triggers the AI to store the correction. You never interact with engram directly — you just talk to the AI.
+engram is a single CLI binary. No daemon, no server, no cloud. It integrates with Claude Code via a prompt hook that runs on every message. The hook reads the user's prompt, uses it as a search query to retrieve the most relevant corrections, detects correction patterns (like "actually," "that's wrong," "we use X not Y"), and injects a targeted instruction that triggers the AI to store the correction. You never interact with engram directly — you just talk to the AI.
 
 ### How is this different from MemPalace?
 
@@ -146,16 +146,19 @@ Trigger hints are indexed by FTS5 and contribute to search relevance. They let t
 
 ## Retrieval
 
-engram uses a four-tier search cascade, stopping at the first tier that returns results:
+engram uses a five-tier search cascade, stopping at the first tier that returns results:
 
 1. **Exact phrase match** — highest precision
 2. **AND match** — all non-stop-word terms must appear (handles reordering)
 3. **OR match** — any term matches (broadest recall)
-4. **LIKE fallback** — for special characters and single-character queries FTS5 rejects
+4. **Trigram match** — substring and partial-match recall via a secondary FTS5 trigram index
+5. **LIKE fallback** — for special characters and single-character queries FTS5 rejects
 
-Results are ranked by a composite score that combines BM25 text relevance, hit frequency (log-scale — a correction used 100 times doesn't completely dominate one used 5 times), recency (180-day exponential decay), and confidence.
+The primary FTS5 index uses a code-friendly tokenizer (`unicode61`) that keeps identifiers like `burntsushi/toml`, `use_state`, `grpc-web`, and `config.toml` as single tokens instead of splitting on `-`, `_`, `.`, or `/`.
 
-Common English stop words (a, the, is, etc.) are filtered from queries to reduce noise.
+Results are ranked by a composite score that combines BM25 text relevance, hit frequency (log-scale), recency (365-day exponential decay with a 5% floor), confidence, and a tier bonus (project-scoped corrections get a 1.5× bonus, global gets 1.2×, domain gets 1.0×). Final selection uses Maximal Marginal Relevance (MMR) to prevent near-duplicate corrections from saturating the token budget.
+
+Common English stop words (a, the, is, etc.) are filtered from queries. Negation words (`not`, `no`) are intentionally preserved — corrections are often about what *not* to do.
 
 ## Benchmarks
 
@@ -201,7 +204,7 @@ Corrections are scoped so the right facts appear in the right context:
 
 engram auto-detects projects by walking up the directory tree looking for a `.engram` marker file (created by `engram init --project`). Commit this file to share project-scoped memory with your team.
 
-When corrections are selected for injection, they're prioritized by scope: global first, then current project, then domain/other. Within each tier, they're sorted by composite relevance score.
+When corrections are selected for injection, scope is a soft preference via the tier bonus (project 1.5×, global 1.2×, domain 1.0×). A strongly-matching global correction can still outrank a weakly-matching project correction.
 
 ## CLI reference
 
@@ -218,6 +221,7 @@ engram store <fact>          Store a correction
   --tags "<comma,separated>"   Tags for retrieval (5-10 recommended)
   --supersedes <id>            ID of the correction this replaces
   --source <user|inferred>     How the correction originated
+  --force                      Bypass duplicate check and store anyway
 
 engram get [query]           Retrieve relevant corrections
   --all                        Return all corrections for current scope
@@ -248,7 +252,7 @@ Global flag:
 
 Everything lives in a single SQLite file at `~/.local/share/engram/engram.db`. Back it up with `cp`. Inspect it with `sqlite3`. Move it to a new machine by copying the file.
 
-Retrieval uses SQLite FTS5 with BM25 ranking and a four-tier search cascade, with automatic LIKE fallback for edge cases. No embedding models, no vector databases, no network calls.
+Retrieval uses two SQLite FTS5 indexes — a primary index with a code-friendly tokenizer for precise matching, and a secondary trigram index for partial/substring matching — ranked by BM25 with a five-tier search cascade. No embedding models, no vector databases, no network calls.
 
 ## Config
 
